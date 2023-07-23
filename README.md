@@ -7,7 +7,7 @@
 Display a text watermark over the Visual Studio editor.
 
 Ensure your name, handle, URI, or other important text is always visible on the screen.
-This can be useful for presentations, demos, screencasts, or streaming as it ensures that this text is always visible, even on photos or screen captures. When used with the folders option, you can mark auto-generated files with watermarks so that you do not accidentally edit files that are auto-generated. 
+This can be useful for presentations, demos, screencasts, or streaming as it ensures that this text is always visible, even on photos or screen captures. *When used with the folders option, you can mark auto-generated files with watermarks so that you do not accidentally edit files that are auto-generated*. 
 
 ![VS screenshot showing highlighted watermark](./Assets/vswatermark-example.png)
 
