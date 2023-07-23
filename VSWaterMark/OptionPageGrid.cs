@@ -3,6 +3,7 @@
 // </copyright>
 
 using System;
+using System.Collections.Generic;
 using System.ComponentModel;
 using Microsoft.VisualStudio.Shell;
 
@@ -10,10 +11,31 @@ namespace VSWaterMark
 {
     public class OptionPageGrid : DialogPage
     {
+#pragma warning disable SA1309 // Field names should not begin with underscore
+        private readonly HashSet<string> _folders = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+#pragma warning restore SA1309 // Field names should not begin with underscore
+
         [Category("WaterMark")]
         [DisplayName("Enabled")]
         [Description("Show the watermark.")]
         public bool IsEnabled { get; set; } = true;
+
+        [Category("WaterMark")]
+        [DisplayName("Folders")]
+        [Description("Show the watermark in these folders.")]
+        public string Folders
+        {
+            get
+            {
+                return string.Join(";", _folders);
+            }
+
+            set
+            {
+                _folders.Clear();
+                _folders.UnionWith(value.Split(new char[] { ';' }, StringSplitOptions.RemoveEmptyEntries));
+            }
+        }
 
         [Category("WaterMark")]
         [DisplayName("Top")]
@@ -74,6 +96,11 @@ namespace VSWaterMark
         [DisplayName("Opacity")]
         [Description("Strength of the background opacity.")]
         public double BorderOpacity { get; set; } = 0.7;
+
+        public IReadOnlyCollection<string> GetContainingFolders()
+        {
+            return _folders;
+        }
 
         protected override void OnClosed(EventArgs e)
         {
