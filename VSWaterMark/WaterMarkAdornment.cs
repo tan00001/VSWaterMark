@@ -128,56 +128,63 @@ namespace VSWaterMark
         {
             ThreadHelper.ThrowIfNotOnUIThread();
 
-            if (VSWaterMarkPackage.Instance != null)
+            try
             {
-                var options = VSWaterMarkPackage.Instance?.Options;
-
-                if (options?.IsEnabled != true)
+                if (VSWaterMarkPackage.Instance != null)
                 {
-                    System.Diagnostics.Debug.WriteLine("options not enabled");
-                    return false;
-                }
+                    var options = VSWaterMarkPackage.Instance?.Options;
 
-                if (!CheckFoldersOption(options))
-                {
-                    return false;
-                }
-
-                try
-                {
-                    if (options.IsUsingImage())
+                    if (options?.IsEnabled != true)
                     {
-                        if (!SetImage(options))
-                        {
-                            return false;
-                        }
-                    }
-                    else
-                    {
-                        if (!SetText(options))
-                        {
-                            return false;
-                        }
+                        System.Diagnostics.Debug.WriteLine("options not enabled");
+                        return false;
                     }
 
-                    SetAdornmentPosition(options);
+                    if (!CheckFoldersOption(options))
+                    {
+                        return false;
+                    }
 
-                    return true;
+                    try
+                    {
+                        if (options.IsUsingImage())
+                        {
+                            if (!SetImage(options))
+                            {
+                                return false;
+                            }
+                        }
+                        else
+                        {
+                            if (!SetText(options))
+                            {
+                                return false;
+                            }
+                        }
+
+                        SetAdornmentPosition(options);
+
+                        return true;
+                    }
+                    catch (Exception exc)
+                    {
+                        OutputError($"Unable to set the text to {options.DisplayedText}", exc);
+                        return false;
+                    }
                 }
-                catch (Exception exc)
+
+                System.Diagnostics.Debug.WriteLine("Package not loaded");
+
+                // Try and load the package so it's there the next time try to access it.
+                if (ServiceProvider.GlobalProvider.GetService(typeof(SVsShell)) is IVsShell shell)
                 {
-                    OutputError($"Unable to set the text to {options.DisplayedText}", exc);
-                    return false;
+                    Guid packageToBeLoadedGuid = new Guid(VSWaterMarkPackage.PackageGuidString);
+                    shell.LoadPackage(ref packageToBeLoadedGuid, out _);
                 }
             }
-
-            System.Diagnostics.Debug.WriteLine("Package not loaded");
-
-            // Try and load the package so it's there the next time try to access it.
-            if (ServiceProvider.GlobalProvider.GetService(typeof(SVsShell)) is IVsShell shell)
+            catch (Exception exc)
             {
-                Guid packageToBeLoadedGuid = new Guid(VSWaterMarkPackage.PackageGuidString);
-                shell.LoadPackage(ref packageToBeLoadedGuid, out _);
+                OutputError($"Unable to load options", exc);
             }
 
             return false;
