@@ -23,9 +23,8 @@ namespace VSWaterMark
         private readonly WaterMarkControl _root;
         private readonly IWpfTextView _view;
         private readonly IAdornmentLayer _adornmentLayer;
+        private string _fileName = null;
 #pragma warning restore SA1309 // Field names should not begin with underscore
-
-        private string fileName = null;
 
         public WaterMarkAdornment(IWpfTextView view)
         {
@@ -50,7 +49,7 @@ namespace VSWaterMark
 
         public void RefreshAdornment()
         {
-            Microsoft.VisualStudio.Shell.ThreadHelper.ThrowIfNotOnUIThread();
+            ThreadHelper.ThrowIfNotOnUIThread();
 
             // clear the adornment layer of previous adornments
             _adornmentLayer.RemoveAdornment(_root);
@@ -82,30 +81,24 @@ namespace VSWaterMark
             }
         }
 
-        private static string ReplaceIgnoreCase(string input, string replace, Func<string> with)
-        {
-            var cfPos = input.IndexOf(replace, StringComparison.InvariantCultureIgnoreCase);
-
-            if (cfPos >= 0)
-            {
-                return input.Substring(0, cfPos) + with.Invoke() + input.Substring(cfPos + replace.Length);
-            }
-
-            return input;
-        }
-
         private void OnUpdateRequested()
         {
+            ThreadHelper.ThrowIfNotOnUIThread();
+
             RefreshAdornment();
         }
 
         private void OnSizeChanged()
         {
+            ThreadHelper.ThrowIfNotOnUIThread();
+
             RefreshAdornment();
         }
 
         private void OnViewClosed()
         {
+            ThreadHelper.ThrowIfNotOnUIThread();
+
             _view.ViewportHeightChanged -= (sender, e) => OnSizeChanged();
             _view.ViewportWidthChanged -= (sender, e) => OnSizeChanged();
 
@@ -118,17 +111,17 @@ namespace VSWaterMark
         {
             ThreadHelper.ThrowIfNotOnUIThread();
 
-            if (fileName == null)
+            if (_fileName == null)
             {
                 _view.TextBuffer.Properties.TryGetProperty(typeof(IVsTextBuffer), out IVsTextBuffer buffer);
 
                 if (buffer is IPersistFileFormat pff)
                 {
-                    pff.GetCurFile(out fileName, out _);
+                    pff.GetCurFile(out _fileName, out _);
                 }
             }
 
-            return fileName;
+            return _fileName;
         }
 
         private bool TryLoadOptions()
@@ -152,122 +145,30 @@ namespace VSWaterMark
 
                 try
                 {
-                    var displayedText = options.DisplayedText;
-
-                    if (displayedText.StartsWith("IMG:"))
+                    if (options.IsUsingImage())
                     {
-                        SetImage(displayedText);
+                        if (!SetImage(options))
+                        {
+                            return false;
+                        }
                     }
                     else
                     {
-                        displayedText = SetText(displayedText);
+                        if (!SetText(options))
+                        {
+                            return false;
+                        }
                     }
+
+                    SetAdornmentPosition(options);
+
+                    return true;
                 }
                 catch (Exception exc)
                 {
                     OutputError($"Unable to set the text to {options.DisplayedText}", exc);
+                    return false;
                 }
-
-                try
-                {
-                    _root.WaterMarkText.FontSize = options.TextSize;
-                }
-                catch (Exception exc)
-                {
-                    OutputError($"Unable to set the FontSize to {options.TextSize}", exc);
-                }
-
-                try
-                {
-                    _root.WaterMarkText.FontFamily = new FontFamily(options.FontFamilyName);
-                }
-                catch (Exception exc)
-                {
-                    OutputError($"Unable to set the FontFamily to {options.FontFamilyName}", exc);
-                }
-
-                try
-                {
-                    _root.WaterMarkText.FontWeight = options.IsFontBold ? FontWeights.Bold : FontWeights.Normal;
-                }
-                catch (Exception exc)
-                {
-                    OutputError("Unable to set the FontWeight", exc);
-                }
-
-                try
-                {
-                    _root.WaterMarkText.Foreground = GetColorBrush(options.TextColor);
-                }
-                catch (Exception exc)
-                {
-                    OutputError($"Unable to set the Text Color to {options.TextColor}", exc);
-                }
-
-                try
-                {
-                    _root.WaterMarkBorder.Background = GetColorBrush(options.BorderBackground);
-                }
-                catch (Exception exc)
-                {
-                    OutputError($"Unable to set the Background to {options.BorderBackground}", exc);
-                }
-
-                try
-                {
-                    _root.WaterMarkBorder.BorderBrush = GetColorBrush(options.BorderColor);
-                }
-                catch (Exception exc)
-                {
-                    OutputError($"Unable to set the Border Color to {options.BorderColor}", exc);
-                }
-
-                try
-                {
-                    _root.WaterMarkBorder.Padding = new Thickness(options.BorderPadding);
-                }
-                catch (Exception exc)
-                {
-                    OutputError($"Unable to set the Padding to {options.BorderPadding}", exc);
-                }
-
-                try
-                {
-                    _root.WaterMarkBorder.Margin = new Thickness(options.BorderMargin);
-                }
-                catch (Exception exc)
-                {
-                    OutputError($"Unable to set the Margin to {options.BorderMargin}", exc);
-                }
-
-                try
-                {
-                    _root.WaterMarkBorder.Opacity = options.BorderOpacity;
-                }
-                catch (Exception exc)
-                {
-                    OutputError($"Unable to set the Opacity to {options.BorderOpacity}", exc);
-                }
-
-                if (options.PositionTop)
-                {
-                    Canvas.SetTop(_root, _view.ViewportTop);
-                }
-                else
-                {
-                    Canvas.SetTop(_root, _view.ViewportBottom - _root.ActualHeight);
-                }
-
-                if (options.PositionLeft)
-                {
-                    Canvas.SetLeft(_root, _view.ViewportLeft);
-                }
-                else
-                {
-                    Canvas.SetLeft(_root, _view.ViewportRight - _root.ActualWidth);
-                }
-
-                return !string.IsNullOrWhiteSpace(options.DisplayedText);
             }
 
             System.Diagnostics.Debug.WriteLine("Package not loaded");
@@ -282,165 +183,352 @@ namespace VSWaterMark
             return false;
         }
 
-        private string SetText(string displayedText)
+        private void LoadTextSettings(OptionPageGrid options)
+        {
+            ThreadHelper.ThrowIfNotOnUIThread();
+
+            var optionsHash = options.GetSettingsHash();
+
+            if (_root.WaterMarkText.Tag is int hash && hash == optionsHash)
+            {
+                return;
+            }
+
+            bool settingsUpdated = true;
+
+            try
+            {
+                _root.WaterMarkText.FontSize = options.TextSize;
+            }
+            catch (Exception exc)
+            {
+                settingsUpdated = false;
+                OutputError($"Unable to set the FontSize to {options.TextSize}", exc);
+            }
+
+            try
+            {
+                _root.WaterMarkText.FontFamily = new FontFamily(options.FontFamilyName);
+            }
+            catch (Exception exc)
+            {
+                settingsUpdated = false;
+                OutputError($"Unable to set the FontFamily to {options.FontFamilyName}", exc);
+            }
+
+            try
+            {
+                _root.WaterMarkText.FontWeight = options.IsFontBold ? FontWeights.Bold : FontWeights.Normal;
+            }
+            catch (Exception exc)
+            {
+                settingsUpdated = false;
+                OutputError("Unable to set the FontWeight", exc);
+            }
+
+            try
+            {
+                _root.WaterMarkText.FontStyle = options.IsFontItalic ? FontStyles.Italic : FontStyles.Normal;
+            }
+            catch (Exception exc)
+            {
+                settingsUpdated = false;
+                OutputError("Unable to set the FontStyle", exc);
+            }
+
+            try
+            {
+                if ((options.IsFontUnderline || options.IsFontStrikeThrough)
+                    && _root.WaterMarkText.Content is string textContent)
+                {
+                    var textBlock = new TextBlock
+                    {
+                        Text = textContent,
+                        TextDecorations = new TextDecorationCollection(),
+                    };
+
+                    if (options.IsFontUnderline)
+                    {
+                        textBlock.TextDecorations.Add(TextDecorations.Underline);
+                    }
+
+                    if (options.IsFontStrikeThrough)
+                    {
+                        textBlock.TextDecorations.Add(TextDecorations.Strikethrough);
+                    }
+
+                    _root.WaterMarkText.Content = textBlock;
+                }
+            }
+            catch (Exception exc)
+            {
+                settingsUpdated = false;
+                OutputError("Unable to set the FontStyle", exc);
+            }
+
+            try
+            {
+                _root.WaterMarkText.Foreground = GetColorBrush(options.TextColor);
+            }
+            catch (Exception exc)
+            {
+                settingsUpdated = false;
+                OutputError($"Unable to set the Text Color to {options.TextColor}", exc);
+            }
+
+            try
+            {
+                _root.WaterMarkBorder.Background = GetColorBrush(options.BackgroundColor);
+            }
+            catch (Exception exc)
+            {
+                settingsUpdated = false;
+                OutputError($"Unable to set the Background to {options.BackgroundColor}", exc);
+            }
+
+            try
+            {
+                _root.WaterMarkBorder.BorderBrush = GetColorBrush(options.BorderColor);
+            }
+            catch (Exception exc)
+            {
+                settingsUpdated = false;
+                OutputError($"Unable to set the Border Color to {options.BorderColor}", exc);
+            }
+
+            try
+            {
+                _root.WaterMarkBorder.Padding = new Thickness(options.BorderPadding);
+            }
+            catch (Exception exc)
+            {
+                settingsUpdated = false;
+                OutputError($"Unable to set the Padding to {options.BorderPadding}", exc);
+            }
+
+            try
+            {
+                _root.WaterMarkBorder.Margin = new Thickness(options.BorderMargin);
+            }
+            catch (Exception exc)
+            {
+                settingsUpdated = false;
+                OutputError($"Unable to set the Margin to {options.BorderMargin}", exc);
+            }
+
+            try
+            {
+                _root.WaterMarkBorder.Opacity = options.BorderOpacity;
+            }
+            catch (Exception exc)
+            {
+                settingsUpdated = false;
+                OutputError($"Unable to set the Opacity to {options.BorderOpacity}", exc);
+            }
+
+            if (settingsUpdated)
+            {
+                try
+                {
+                    _root.WaterMarkText.Tag = optionsHash;
+                }
+                catch (Exception exc)
+                {
+                    OutputError($"Unable to set the Opacity to {options.BorderOpacity}", exc);
+                }
+            }
+        }
+
+        private bool SetText(OptionPageGrid options)
         {
             ThreadHelper.ThrowIfNotOnUIThread();
 
             _root.WaterMarkImage.Visibility = Visibility.Hidden;
             _root.WaterMarkText.Visibility = Visibility.Visible;
 
-            if (displayedText.ToLowerInvariant().Contains("${current"))
+            string displayedText = options.UsingReplacements() ? MakeReplacements(options) : options.DisplayedText;
+
+            if (_root.WaterMarkText.Content is string waterMarktext && !waterMarktext.Equals(displayedText))
             {
-                var curFile = GetFileName();
+                _root.WaterMarkText.Content = displayedText;
+            }
+            else if (_root.WaterMarkText.Content is TextBlock waterMarkTextBlock && !waterMarkTextBlock.Text.Equals(displayedText))
+            {
+                waterMarkTextBlock.Text = displayedText;
+            }
 
-                if (!string.IsNullOrWhiteSpace(curFile))
+            if (!string.IsNullOrWhiteSpace(displayedText))
+            {
+                LoadTextSettings(options);
+                return true;
+            }
+
+            return false;
+        }
+
+        private string MakeReplacements(OptionPageGrid options)
+        {
+            ThreadHelper.ThrowIfNotOnUIThread();
+
+            var curFile = GetFileName();
+
+            if (string.IsNullOrWhiteSpace(curFile))
+            {
+                OutputError("Unable to get name of the current file.");
+                return string.Empty;
+            }
+
+            // We know we have replacements to make before coming in here
+            var displayedText = options.GetDisplayTextFormat();
+
+            if (options.UseCurrentFileName())
+            {
+                try
                 {
-                    displayedText = ReplaceIgnoreCase(
-                                        displayedText,
-                                        "${currentFileName}",
-                                        () =>
-                                        {
-                                            try
-                                            {
-                                                return Path.GetFileName(curFile);
-                                            }
-                                            catch (Exception exc)
-                                            {
-                                                OutputError($"Unable to get the name of the file from the path '{curFile}'.");
-                                                System.Diagnostics.Debug.WriteLine(exc);
-                                                return string.Empty;
-                                            }
-                                        });
-
-                    displayedText = ReplaceIgnoreCase(
-                                        displayedText,
-                                        "${currentDirectoryName}",
-                                        () =>
-                                        {
-                                            try
-                                            {
-                                                return new DirectoryInfo(Path.GetDirectoryName(curFile)).Name;
-                                            }
-                                            catch (Exception exc)
-                                            {
-                                                OutputError($"Unable to get the name of the dirctory from the current file path '{curFile}'.");
-                                                System.Diagnostics.Debug.WriteLine(exc);
-                                                return string.Empty;
-                                            }
-                                        });
-
-
-                    var projItem = ProjectHelpers.Dte2.Solution.FindProjectItem(curFile);
-                    if (projItem == null)
-                    {
-                        displayedText = ReplaceIgnoreCase(
-                                            displayedText,
-                                            "${currentProjectName}",
-                                            () => string.Empty);
-                        displayedText = ReplaceIgnoreCase(
-                                            displayedText,
-                                            "${currentFilePathInProject}",
-                                            () => string.Empty);
-                    }
-                    else
-                    {
-                        displayedText = ReplaceIgnoreCase(
-                                        displayedText,
-                                        "${currentProjectName}",
-                                        () =>
-                                        {
-                                            try
-                                            {
-                                                ThreadHelper.ThrowIfNotOnUIThread();
-
-                                                return projItem.ContainingProject.Name ?? string.Empty;
-                                            }
-                                            catch (Exception exc)
-                                            {
-                                                OutputError("Unable to get the name of the project the current file is in.");
-                                                System.Diagnostics.Debug.WriteLine(exc);
-                                                return string.Empty;
-                                            }
-                                        });
-
-                        displayedText = ReplaceIgnoreCase(
-                                        displayedText,
-                                        "${currentFilePathInProject}",
-                                        () =>
-                                        {
-                                            try
-                                            {
-                                                ThreadHelper.ThrowIfNotOnUIThread();
-
-                                                var projectFolderPath = Path.GetDirectoryName(projItem.ContainingProject.FullName);
-
-                                                if (curFile.StartsWith(projectFolderPath, StringComparison.InvariantCultureIgnoreCase))
-                                                {
-                                                    return curFile.Substring(projectFolderPath.Length);
-                                                }
-                                                else
-                                                {
-                                                    return Path.GetFileName(Path.GetDirectoryName(curFile));
-                                                }
-                                            }
-                                            catch (Exception exc)
-                                            {
-                                                OutputError($"Unable to get the name of the dirctory from the current file path '{curFile}'.");
-                                                System.Diagnostics.Debug.WriteLine(exc);
-                                                return string.Empty;
-                                            }
-                                        });
-                    }
+                    // Occurances of replacement in displayedText were already made lower case when the options was
+                    // initialized. This simplifies the replacements
+                    displayedText = displayedText.Replace(OptionPageGrid.CurrentFileName, Path.GetFileName(curFile));
                 }
-                else
+                catch (Exception exc)
                 {
-                    OutputError("Unable to get name of the current file.");
+                    OutputError($"Unable to get the name of the file from the path '{curFile}'.");
+                    System.Diagnostics.Debug.WriteLine(exc);
+                    return string.Empty;
                 }
             }
 
-            if (!_root.WaterMarkText.Content.ToString().Equals(displayedText))
+            if (options.UseCurrentDirectoryName())
             {
-                // TODO: If right-aligned, need to remeasure the width appropriately | See  #9
-                _root.WaterMarkText.Content = displayedText;
-                ////_ = System.Threading.Tasks.Task.Delay(200).ConfigureAwait(true);
-                ////_root.Measure((_view as FrameworkElement).RenderSize);
+                try
+                {
+                    // Occurances of replacement in displayedText were already made lower case when the options was
+                    // initialized. This simplifies the replacements
+                    displayedText = displayedText.Replace(OptionPageGrid.CurrentDirectoryName, Path.GetFileName(Path.GetDirectoryName(curFile)));
+                }
+                catch (Exception exc)
+                {
+                    OutputError($"Unable to get the name of the dirctory from the current file path '{curFile}'.");
+                    System.Diagnostics.Debug.WriteLine(exc);
+                    return string.Empty;
+                }
+            }
 
-                // Need to force a reshresh after the content has been changed to ensure it gets aligned correctly.
-                ////ThreadHelper.JoinableTaskFactory.Run(async () =>
-                ////{
-                ////    // A small pause for the adornment to be drawn at the new size and then request update to pick up new width.
-                ////    await System.Threading.Tasks.Task.Delay(200);
+            if (!options.UseCurrentProjectName() && !options.UseCurrentFilePathInProject())
+            {
+                return displayedText;
+            }
 
-                ////    ////Messenger.RequestUpdateAdornment();
-                ////    ///
-                ////    RefreshAdornment();
-                ////});
+            var projItem = ProjectHelpers.Dte2.Solution.FindProjectItem(curFile);
+            if (projItem == null)
+            {
+                return string.Empty;
+            }
+
+            if (options.UseCurrentProjectName())
+            {
+                try
+                {
+                    // Occurances of replacement in displayedText were already made lower case when the options was
+                    // initialized. This simplifies the replacements
+                    displayedText = displayedText.Replace(OptionPageGrid.CurrentProjectName, projItem.ContainingProject.Name);
+                }
+                catch (Exception exc)
+                {
+                    OutputError("Unable to get the name of the project the current file is in.");
+                    System.Diagnostics.Debug.WriteLine(exc);
+                    return string.Empty;
+                }
+            }
+
+            if (options.UseCurrentFilePathInProject())
+            {
+                try
+                {
+                    var projectFolderPath = Path.GetDirectoryName(projItem.ContainingProject.FullName);
+
+                    // Occurances of replacement in displayedText were already made lower case when the options was
+                    // initialized. This simplifies the replacements
+                    if (curFile.StartsWith(projectFolderPath, StringComparison.InvariantCultureIgnoreCase))
+                    {
+                        displayedText = displayedText.Replace(OptionPageGrid.CurrentFilePathInProject, curFile.Substring(projectFolderPath.Length));
+                    }
+                    else
+                    {
+                        displayedText = displayedText.Replace(OptionPageGrid.CurrentFilePathInProject, string.Empty);
+                    }
+                }
+                catch (Exception exc)
+                {
+                    OutputError($"Unable to get the name of the dirctory from the current file path '{curFile}'.");
+                    System.Diagnostics.Debug.WriteLine(exc);
+                    return string.Empty;
+                }
             }
 
             return displayedText;
         }
 
-        private void SetImage(string displayedText)
+        private void SetAdornmentPosition(OptionPageGrid options)
         {
+            // TODO: If right-aligned, need to remeasure the width appropriately | See  #9
+            ////_ = System.Threading.Tasks.Task.Delay(200).ConfigureAwait(true);
+            ////_root.Measure((_view as FrameworkElement).RenderSize);
+
+            // Need to force a reshresh after the content has been changed to ensure it gets aligned correctly.
+            ////ThreadHelper.JoinableTaskFactory.Run(async () =>
+            ////{
+            ////    // A small pause for the adornment to be drawn at the new size and then request update to pick up new width.
+            ////    await System.Threading.Tasks.Task.Delay(200);
+
+            ////    ////Messenger.RequestUpdateAdornment();
+            ////    ///
+            ////    RefreshAdornment();
+            ////});
+            if (options.PositionTop)
+            {
+                Canvas.SetTop(_root, _view.ViewportTop);
+            }
+            else
+            {
+                Canvas.SetTop(_root, _view.ViewportBottom - _root.ActualHeight);
+            }
+
+            if (options.PositionLeft)
+            {
+                Canvas.SetLeft(_root, _view.ViewportLeft);
+            }
+            else
+            {
+                Canvas.SetLeft(_root, _view.ViewportRight - _root.ActualWidth);
+            }
+        }
+
+        private bool SetImage(OptionPageGrid options)
+        {
+            ThreadHelper.ThrowIfNotOnUIThread();
+
             try
             {
                 _root.WaterMarkImage.Visibility = Visibility.Visible;
                 _root.WaterMarkText.Visibility = Visibility.Hidden;
 
-                var path = displayedText.Substring(4);
+                var imagePath = options.GetImagePath();
 
-                if (System.IO.File.Exists(path))
+                if (File.Exists(imagePath))
                 {
-                    _root.WaterMarkImage.Source = new BitmapImage(new Uri(path));
+                    _root.WaterMarkImage.Source = new BitmapImage(new Uri(imagePath));
+                    return true;
                 }
                 else
                 {
-                    OutputError($"Specified image not found: '{path}'");
+                    OutputError($"Specified image not found: '{imagePath}'");
+                    return false;
                 }
             }
             catch (Exception exc)
             {
                 OutputError($"Unable to set image.", exc);
+                return false;
             }
         }
 
@@ -511,7 +599,8 @@ namespace VSWaterMark
         {
             System.Diagnostics.Debug.WriteLine(exc);
 
-            Microsoft.VisualStudio.Shell.ThreadHelper.ThrowIfNotOnUIThread();
+            ThreadHelper.ThrowIfNotOnUIThread();
+
             WaterMarkOutputPane.Instance.Write($"{message}{Environment.NewLine}");
             WaterMarkOutputPane.Instance.Activate();
         }
